@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from server.app.models import IngestionJob, Document, DocumentChunk
 from server.app.ingestion import extract_text_from_file, chunk_text
-from server.app.providers import EmbeddingProvider
+from server.app.providers import EmbeddingProvider, ProviderUnavailableError
 from server.app.config import Settings
 from server.app.database import AsyncSessionLocal
 
@@ -186,6 +186,7 @@ async def process_document_job(
     except Exception as e:
         logger.exception(f"Unhandled error during ingestion job {job_id}: {e}")
         await db.rollback()
+        should_retry_inline = False
         try:
             job_res = await db.execute(
                 select(IngestionJob).where(
@@ -198,24 +199,44 @@ async def process_document_job(
                 job.error_message = str(e)
                 job.locked_at = None
                 job.locked_by = None
-                if job.attempts >= job.max_attempts:
-                    job.status = "failed"
-                else:
+                # Only transient provider failures are worth retrying; malformed input
+                # (for example binary bytes rejected by the UTF-8 chunk insert) would
+                # fail identically on every attempt.
+                retryable = isinstance(e, ProviderUnavailableError) and job.attempts < job.max_attempts
+                if retryable:
                     job.status = "pending"  # eligible for retry
-            doc_res = await db.execute(select(Document).where(Document.id == job.document_id))
-            doc = doc_res.scalars().first()
+                    should_retry_inline = settings.ingestion_mode == "inline"
+                else:
+                    job.status = "failed"
+            doc = None
+            if job:
+                doc_res = await db.execute(select(Document).where(Document.id == job.document_id))
+                doc = doc_res.scalars().first()
             if doc and job and job.status == "failed":
                 doc.status = "failed"
                 doc.error_message = str(e)
             await db.commit()
         except Exception:
             pass
+        if should_retry_inline:
+            # Inline mode has no polling worker, so a job left pending would never
+            # be claimed again. Re-dispatch it here to reach a terminal state.
+            asyncio.create_task(_retry_inline_job(job_id, settings, embedding_provider))
     finally:
         stop_heartbeat.set()
         if heartbeat_task:
             heartbeat_task.cancel()
         if close_db:
             await db.close()
+
+
+async def _retry_inline_job(job_id, settings: Settings, embedding_provider: EmbeddingProvider, delay: float = 2.0):
+    """Re-runs a transiently failed inline ingestion after a backoff."""
+    await asyncio.sleep(delay)
+    try:
+        await process_document_job(job_id, settings, embedding_provider)
+    except Exception as e:
+        logger.exception(f"Inline retry for job {job_id} failed: {e}")
 
 
 async def reclaim_stale_jobs(settings: Settings, db: AsyncSession):

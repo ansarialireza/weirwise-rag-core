@@ -1,7 +1,17 @@
 from abc import ABC, abstractmethod
 from typing import List
+import asyncio
 import httpx
 from server.app.config import Settings
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Transient provider failure (rate limit, 5xx, or transport error) after retries."""
+
+
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_EMBEDDING_RETRY_ATTEMPTS = 4
+_EMBEDDING_RETRY_DELAYS = (4.0, 12.0, 25.0)
 
 
 class EmbeddingProvider(ABC):
@@ -47,25 +57,49 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "dimensions": self.dimensions,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"Embedding provider error (status {resp.status_code}): {resp.text}"
-                )
-            data = resp.json()
-            items = data.get("data") or []
-            if len(items) != len(texts):
-                raise RuntimeError(
-                    f"Embedding provider returned {len(items)} vectors for {len(texts)} inputs"
-                )
-            # Providers may scramble order via `index`; Gemini's OpenAI-compatible
-            # endpoint omits `index` entirely for the first item, so fall back to
-            # the response position when it is absent.
-            ordered = sorted(
-                enumerate(items), key=lambda pair: pair[1].get("index", pair[0])
-            )
-            return [item["embedding"] for _, item in ordered]
+        last_error = "unknown error"
+        for attempt in range(_EMBEDDING_RETRY_ATTEMPTS):
+            retry_after = None
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+            except httpx.TransportError as exc:
+                last_error = f"transport error: {exc!s}"
+            else:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("data") or []
+                    if len(items) != len(texts):
+                        raise RuntimeError(
+                            f"Embedding provider returned {len(items)} vectors for {len(texts)} inputs"
+                        )
+                    # Providers may scramble order via `index`; Gemini's OpenAI-compatible
+                    # endpoint omits `index` entirely for the first item, so fall back to
+                    # the response position when it is absent.
+                    ordered = sorted(
+                        enumerate(items), key=lambda pair: pair[1].get("index", pair[0])
+                    )
+                    return [item["embedding"] for _, item in ordered]
+
+                if resp.status_code not in _TRANSIENT_STATUS_CODES:
+                    raise RuntimeError(
+                        f"Embedding provider error (status {resp.status_code}): {resp.text}"
+                    )
+                last_error = f"status {resp.status_code}: {resp.text[:300]}"
+                retry_after = resp.headers.get("retry-after")
+
+            if attempt < _EMBEDDING_RETRY_ATTEMPTS - 1:
+                delay = _EMBEDDING_RETRY_DELAYS[min(attempt, len(_EMBEDDING_RETRY_DELAYS) - 1)]
+                if retry_after:
+                    try:
+                        delay = min(max(float(retry_after), delay), 30.0)
+                    except ValueError:
+                        pass
+                await asyncio.sleep(delay)
+
+        raise ProviderUnavailableError(
+            f"Embedding provider unavailable after {_EMBEDDING_RETRY_ATTEMPTS} attempts: {last_error}"
+        )
 
 
 class ChatProvider(ABC):
