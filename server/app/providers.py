@@ -54,9 +54,18 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     f"Embedding provider error (status {resp.status_code}): {resp.text}"
                 )
             data = resp.json()
-            # Sort by index in case returned out of order
-            sorted_data = sorted(data["data"], key=lambda item: item["index"])
-            return [item["embedding"] for item in sorted_data]
+            items = data.get("data") or []
+            if len(items) != len(texts):
+                raise RuntimeError(
+                    f"Embedding provider returned {len(items)} vectors for {len(texts)} inputs"
+                )
+            # Providers may scramble order via `index`; Gemini's OpenAI-compatible
+            # endpoint omits `index` entirely for the first item, so fall back to
+            # the response position when it is absent.
+            ordered = sorted(
+                enumerate(items), key=lambda pair: pair[1].get("index", pair[0])
+            )
+            return [item["embedding"] for _, item in ordered]
 
 
 class ChatProvider(ABC):
