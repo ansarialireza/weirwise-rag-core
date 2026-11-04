@@ -1,6 +1,7 @@
 import os
 import uuid
 import hashlib
+import codecs
 from typing import List
 from uuid import UUID
 from fastapi import (
@@ -42,10 +43,101 @@ from server.app.schemas import (
     ChatResponse,
 )
 from server.app.retrieval import retrieve_relevant_chunks
-from server.app.providers import OpenAIEmbeddingProvider, OpenAIChatProvider
+from server.app.providers import (
+    OpenAIEmbeddingProvider,
+    OpenAIChatProvider,
+    ProviderUnavailableError,
+)
 from server.app.worker import process_document_job
 
 router = APIRouter(prefix="/v1")
+
+_TEXT_EXTENSIONS = {".txt", ".text", ".md", ".markdown"}
+_UPLOAD_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx"}
+
+
+async def _spool_upload(file: UploadFile, settings: Settings) -> tuple[str, str, int, str]:
+    """Stream an upload to a temp file with a hard size cap; return (path, ext, size, sha256).
+
+    Reading the whole body into memory before checking its size let one request
+    hold up to the full 50MB limit (and more) in RAM.
+    """
+    filename = file.filename or "unknown"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                f"Unsupported file type '{ext or 'none'}'. "
+                f"Supported: {', '.join(sorted(_UPLOAD_EXTENSIONS))}"
+            ),
+        )
+    kind = "pdf" if ext == ".pdf" else "docx" if ext == ".docx" else "text"
+
+    storage_dir = settings.storage_dir
+    os.makedirs(storage_dir, exist_ok=True)
+    part_path = os.path.join(storage_dir, f".upload-{uuid.uuid4().hex}.part")
+
+    hasher = hashlib.sha256()
+    total = 0
+    head = b""
+    decoder = codecs.getincrementaldecoder("utf-8")() if kind == "text" else None
+
+    try:
+        with open(part_path, "wb") as out:
+            while True:
+                chunk = await file.read(settings.upload_read_chunk_bytes)
+                if not chunk:
+                    break
+                if not head:
+                    head = chunk[:8]
+                total += len(chunk)
+                if total > settings.max_upload_size_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=(
+                            "File exceeds maximum allowed size of "
+                            f"{settings.max_upload_size_bytes} bytes"
+                        ),
+                    )
+                if kind == "text":
+                    if b"\x00" in chunk:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="File appears to be binary, not UTF-8 text.",
+                        )
+                    try:
+                        decoder.decode(chunk)
+                    except UnicodeDecodeError:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="File is not valid UTF-8 text.",
+                        )
+                hasher.update(chunk)
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+
+        if total == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty.")
+        if kind == "pdf" and not head.startswith(b"%PDF-"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File does not have a valid PDF signature.",
+            )
+        if kind == "docx" and not head.startswith(b"PK\x03\x04"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File does not have a valid DOCX signature.",
+            )
+        return part_path, ext, total, hasher.hexdigest()
+    except BaseException:
+        try:
+            if os.path.exists(part_path):
+                os.remove(part_path)
+        except OSError:
+            pass
+        raise
 
 
 # --- Knowledge Bases ---
@@ -149,6 +241,16 @@ async def delete_knowledge_base(
     kb = res.scalars().first()
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+    # Remove physical files before the cascade drops the document rows.
+    docs_res = await db.execute(select(Document).where(Document.knowledge_base_id == kb.id))
+    for doc in docs_res.scalars().all():
+        if doc.storage_path and os.path.exists(doc.storage_path):
+            try:
+                os.remove(doc.storage_path)
+            except OSError:
+                pass
+
     await db.delete(kb)
     await db.commit()
     return None
@@ -182,125 +284,24 @@ async def upload_document(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
 
-    # Read and validate file content
-    content = await file.read()
-    if len(content) > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds maximum allowed size of {settings.max_upload_size_bytes} bytes",
-        )
+    # Stream to disk under a hard cap instead of buffering the whole file in RAM.
+    part_path, file_ext, file_size, content_hash = await _spool_upload(file, settings)
+    storage_path = None
 
-    content_hash = hashlib.sha256(content).hexdigest()
-
-    # ATOMIC DEDUPLICATION & CONCURRENCY CONTROL
-    # Lock document record by (knowledge_base_id, content_hash) if exists
-    existing_doc_stmt = (
-        select(Document)
-        .where(
-            Document.knowledge_base_id == kb.id,
-            Document.content_hash == content_hash,
-        )
-        .with_for_update()
-    )
-    existing_res = await db.execute(existing_doc_stmt)
-    existing_doc = existing_res.scalars().first()
-
-    if existing_doc:
-        if existing_doc.status == "completed":
-            return DocumentUploadResponse(
-                document=DocumentResponse.model_validate(existing_doc),
-                job_id=None,
-                message="Document already indexed.",
-            )
-        elif existing_doc.status in ("pending", "processing"):
-            return DocumentUploadResponse(
-                document=DocumentResponse.model_validate(existing_doc),
-                job_id=None,
-                message="Document ingestion already in progress.",
-            )
-        elif existing_doc.status == "failed":
-            # Failed document retry: check if an active job already exists
-            active_job_stmt = (
-                select(IngestionJob)
-                .where(
-                    IngestionJob.document_id == existing_doc.id,
-                    IngestionJob.status.in_(["pending", "processing"]),
-                )
-                .with_for_update()
-            )
-            job_res = await db.execute(active_job_stmt)
-            active_job = job_res.scalars().first()
-
-            if active_job:
-                return DocumentUploadResponse(
-                    document=DocumentResponse.model_validate(existing_doc),
-                    job_id=active_job.id,
-                    message="Document ingestion already in progress.",
-                )
-
-            # Atomically reset failed document to pending and enqueue single job
-            existing_doc.status = "pending"
-            existing_doc.error_message = None
-            retry_job = IngestionJob(
-                tenant_id=tenant.id,
-                document_id=existing_doc.id,
-                status="pending",
-            )
-            db.add(retry_job)
-            await db.commit()
-            await db.refresh(existing_doc)
-            await db.refresh(retry_job)
-
-            if settings.ingestion_mode == "inline":
-                provider = OpenAIEmbeddingProvider(settings)
-                session_factory = getattr(db, "_session_factory", AsyncSessionLocal)
-                background_tasks.add_task(
-                    process_document_job,
-                    retry_job.id,
-                    settings,
-                    provider,
-                    db_session_factory=session_factory,
-                )
-
-            return DocumentUploadResponse(
-                document=DocumentResponse.model_validate(existing_doc),
-                job_id=retry_job.id,
-                message="Failed document retrying. Ingestion started.",
-            )
-
-    # Generate safe storage path
-    storage_dir = settings.storage_dir
-    os.makedirs(storage_dir, exist_ok=True)
-    file_ext = os.path.splitext(file.filename or "")[1]
-    safe_name = f"{uuid.uuid4()}{file_ext}"
-    storage_path = os.path.join(storage_dir, safe_name)
-
-    with open(storage_path, "wb") as f:
-        f.write(content)
-
-    doc = Document(
-        tenant_id=tenant.id,
-        knowledge_base_id=kb.id,
-        filename=file.filename or "unknown",
-        storage_path=storage_path,
-        mime_type=file.content_type or "application/octet-stream",
-        file_size=len(content),
-        content_hash=content_hash,
-        status="pending",
-    )
     try:
-        async with db.begin_nested():
-            db.add(doc)
-            await db.flush()
-    except Exception as e:
-        # Race condition: another concurrent upload inserted the same (knowledge_base_id, content_hash)
-        race_res = await db.execute(
-            select(Document).where(
+        # ATOMIC DEDUPLICATION & CONCURRENCY CONTROL
+        # Lock document record by (knowledge_base_id, content_hash) if exists
+        existing_doc_stmt = (
+            select(Document)
+            .where(
                 Document.knowledge_base_id == kb.id,
                 Document.content_hash == content_hash,
             )
+            .with_for_update()
         )
-        existing_doc = race_res.scalars().first()
+        existing_res = await db.execute(existing_doc_stmt)
+        existing_doc = existing_res.scalars().first()
+
         if existing_doc:
             if existing_doc.status == "completed":
                 return DocumentUploadResponse(
@@ -308,13 +309,122 @@ async def upload_document(
                     job_id=None,
                     message="Document already indexed.",
                 )
-            else:
+            elif existing_doc.status in ("pending", "processing"):
                 return DocumentUploadResponse(
                     document=DocumentResponse.model_validate(existing_doc),
                     job_id=None,
                     message="Document ingestion already in progress.",
                 )
-        raise e
+            elif existing_doc.status == "failed":
+                # Failed document retry: check if an active job already exists
+                active_job_stmt = (
+                    select(IngestionJob)
+                    .where(
+                        IngestionJob.document_id == existing_doc.id,
+                        IngestionJob.status.in_(["pending", "processing"]),
+                    )
+                    .with_for_update()
+                )
+                job_res = await db.execute(active_job_stmt)
+                active_job = job_res.scalars().first()
+
+                if active_job:
+                    return DocumentUploadResponse(
+                        document=DocumentResponse.model_validate(existing_doc),
+                        job_id=active_job.id,
+                        message="Document ingestion already in progress.",
+                    )
+
+                # Atomically reset failed document to pending and enqueue single job
+                existing_doc.status = "pending"
+                existing_doc.error_message = None
+                retry_job = IngestionJob(
+                    tenant_id=tenant.id,
+                    document_id=existing_doc.id,
+                    status="pending",
+                )
+                db.add(retry_job)
+                await db.commit()
+                await db.refresh(existing_doc)
+                await db.refresh(retry_job)
+
+                if settings.ingestion_mode == "inline":
+                    provider = OpenAIEmbeddingProvider(settings)
+                    session_factory = getattr(db, "_session_factory", AsyncSessionLocal)
+                    background_tasks.add_task(
+                        process_document_job,
+                        retry_job.id,
+                        settings,
+                        provider,
+                        db_session_factory=session_factory,
+                    )
+
+                return DocumentUploadResponse(
+                    document=DocumentResponse.model_validate(existing_doc),
+                    job_id=retry_job.id,
+                    message="Failed document retrying. Ingestion started.",
+                )
+
+        # The content is new: promote the spooled file to its durable name.
+        os.makedirs(settings.storage_dir, exist_ok=True)
+        storage_path = os.path.join(settings.storage_dir, f"{uuid.uuid4()}{file_ext}")
+        os.replace(part_path, storage_path)
+
+        doc = Document(
+            tenant_id=tenant.id,
+            knowledge_base_id=kb.id,
+            filename=file.filename or "unknown",
+            storage_path=storage_path,
+            mime_type=file.content_type or "application/octet-stream",
+            file_size=file_size,
+            content_hash=content_hash,
+            status="pending",
+        )
+        try:
+            async with db.begin_nested():
+                db.add(doc)
+                await db.flush()
+        except Exception as e:
+            # Race condition: another concurrent upload inserted the same (knowledge_base_id, content_hash)
+            race_res = await db.execute(
+                select(Document).where(
+                    Document.knowledge_base_id == kb.id,
+                    Document.content_hash == content_hash,
+                )
+            )
+            existing_doc = race_res.scalars().first()
+            if existing_doc:
+                try:
+                    os.remove(storage_path)
+                except OSError:
+                    pass
+                storage_path = None
+                if existing_doc.status == "completed":
+                    return DocumentUploadResponse(
+                        document=DocumentResponse.model_validate(existing_doc),
+                        job_id=None,
+                        message="Document already indexed.",
+                    )
+                return DocumentUploadResponse(
+                    document=DocumentResponse.model_validate(existing_doc),
+                    job_id=None,
+                    message="Document ingestion already in progress.",
+                )
+            raise e
+
+    except BaseException:
+        if storage_path and os.path.exists(storage_path):
+            try:
+                os.remove(storage_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
 
     job = IngestionJob(
         tenant_id=tenant.id,
@@ -463,27 +573,40 @@ async def search_knowledge(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    # Verify Knowledge Base belongs to tenant
+    # Verify every requested Knowledge Base belongs to this tenant
+    kb_ids = payload.knowledge_base_ids or [payload.knowledge_base_id]
+    unique_kb_ids = list(dict.fromkeys(kb_ids))
     kb_res = await db.execute(
-        select(KnowledgeBase).where(
-            KnowledgeBase.id == payload.knowledge_base_id,
+        select(KnowledgeBase.id).where(
+            KnowledgeBase.id.in_(unique_kb_ids),
             KnowledgeBase.tenant_id == tenant.id,
         )
     )
-    if not kb_res.scalars().first():
+    found_ids = set(kb_res.scalars().all())
+    if len(found_ids) != len(unique_kb_ids):
         raise HTTPException(status_code=404, detail="Knowledge base not found")
 
     provider = OpenAIEmbeddingProvider(settings)
-    results = await retrieve_relevant_chunks(
-        db=db,
-        tenant_id=tenant.id,
-        knowledge_base_id=payload.knowledge_base_id,
-        query=payload.query,
-        embedding_provider=provider,
-        top_k=payload.top_k,
-        score_threshold=payload.score_threshold,
-        metadata_filters=payload.metadata_filters,
-    )
+    try:
+        results = await retrieve_relevant_chunks(
+            db=db,
+            tenant_id=tenant.id,
+            knowledge_base_id=payload.knowledge_base_id,
+            knowledge_base_ids=payload.knowledge_base_ids,
+            query=payload.query,
+            embedding_provider=provider,
+            top_k=payload.top_k,
+            score_threshold=payload.score_threshold,
+            metadata_filters=payload.metadata_filters,
+        )
+    except ProviderUnavailableError as e:
+        # The provider is upstream and transient; callers should retry rather
+        # than treat this as a defect in their request.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+            headers={"Retry-After": "5"},
+        )
 
     items = [SearchResultItem(**r) for r in results]
     return SearchResponse(results=items, total=len(items))

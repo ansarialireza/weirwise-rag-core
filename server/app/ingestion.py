@@ -5,22 +5,41 @@ from pypdf import PdfReader
 
 
 def extract_text_from_file(file_path: str, mime_type: str) -> str:
-    """Extract clean text from PDF, Markdown, or plain text file."""
+    """Extract clean text from PDF, DOCX, Markdown, or plain text file."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    if "pdf" in mime_type.lower() or file_path.lower().endswith(".pdf"):
+    lower_path = file_path.lower()
+    is_pdf = "pdf" in (mime_type or "").lower() or lower_path.endswith(".pdf")
+    is_docx = "wordprocessingml" in (mime_type or "").lower() or lower_path.endswith(".docx")
+
+    if is_pdf:
+        with open(file_path, "rb") as fh:
+            if not fh.read(5).startswith(b"%PDF-"):
+                raise ValueError("File is not a valid PDF (missing %PDF- signature)")
         reader = PdfReader(file_path)
         pages_text = []
-        for i, page in enumerate(reader.pages):
+        for page in reader.pages:
             text = page.extract_text()
             if text:
                 pages_text.append(text)
         return "\n\n".join(pages_text)
-    else:
-        # Plain text, markdown, etc.
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+
+    if is_docx:
+        import docx
+
+        document = docx.Document(file_path)
+        paragraphs = [p.text for p in document.paragraphs if p.text and p.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text and cell.text.strip()]
+                if cells:
+                    paragraphs.append(" | ".join(cells))
+        return "\n\n".join(paragraphs)
+
+    # Plain text, markdown, etc. Reject undecodable bytes instead of indexing replacement chars.
+    with open(file_path, "r", encoding="utf-8", errors="strict") as f:
+        return f.read()
 
 
 def chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:

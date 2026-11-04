@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List
 import asyncio
+import hashlib
+import time
+from collections import OrderedDict
+
 import httpx
 from server.app.config import Settings
 
@@ -12,6 +16,73 @@ class ProviderUnavailableError(RuntimeError):
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 _EMBEDDING_RETRY_ATTEMPTS = 4
 _EMBEDDING_RETRY_DELAYS = (4.0, 12.0, 25.0)
+_CHAT_RETRY_ATTEMPTS = 3
+_CHAT_RETRY_DELAYS = (1.0, 3.0)
+
+# One keep-alive HTTP client per event loop. A fresh TLS handshake per provider
+# call cost ~600ms against Gemini embeddings in the measured baseline.
+_clients: dict[int, httpx.AsyncClient] = {}
+
+
+def _pooled_client(max_connections: int, timeout: float) -> httpx.AsyncClient:
+    loop_id = id(asyncio.get_running_loop())
+    client = _clients.get(loop_id)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=max_connections,
+                max_keepalive_connections=max_connections // 2 or 1,
+                keepalive_expiry=120.0,
+            ),
+        )
+        _clients[loop_id] = client
+    return client
+
+
+async def close_provider_clients() -> None:
+    """Close pooled clients on application shutdown."""
+    clients = list(_clients.values())
+    _clients.clear()
+    for client in clients:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+
+class _EmbeddingCache:
+    """Bounded TTL LRU for query embeddings. Text -> vector is deterministic per model."""
+
+    def __init__(self, max_size: int, ttl_seconds: int):
+        self.max_size = max_size
+        self.ttl = ttl_seconds
+        self._items: OrderedDict[str, tuple[float, List[float]]] = OrderedDict()
+
+    @staticmethod
+    def _key(base_url: str, model: str, dimensions: int, text: str) -> str:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"{base_url}|{model}|{dimensions}|{digest}"
+
+    def get(self, key: str) -> List[float] | None:
+        entry = self._items.get(key)
+        if not entry:
+            return None
+        expires_at, vector = entry
+        if expires_at < time.monotonic():
+            self._items.pop(key, None)
+            return None
+        self._items.move_to_end(key)
+        return vector
+
+    def put(self, key: str, vector: List[float]) -> None:
+        if self.max_size <= 0 or self.ttl <= 0:
+            return
+        self._items[key] = (time.monotonic() + self.ttl, vector)
+        self._items.move_to_end(key)
+        while len(self._items) > self.max_size:
+            self._items.popitem(last=False)
+
 
 
 class EmbeddingProvider(ABC):
@@ -28,11 +99,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self.model = settings.embedding_model
         self.dimensions = settings.embedding_dimensions
         self.timeout = settings.embedding_timeout_seconds
+        self.max_connections = settings.embedding_pool_connections
+        self._cache = _EmbeddingCache(
+            settings.embedding_cache_size, settings.embedding_cache_ttl_seconds
+        )
 
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         if not self.api_key:
             # Deterministic pseudo-embedding generator for test/dev mode when no key is set
-            import hashlib
             import numpy as np
 
             vectors = []
@@ -46,6 +120,27 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 vectors.append(normalized)
             return vectors
 
+        cache_keys = [
+            self._cache._key(self.base_url, self.model, self.dimensions, text) for text in texts
+        ]
+        results: dict[int, List[float]] = {}
+        missing: list[tuple[int, str]] = []
+        for index, key in enumerate(cache_keys):
+            cached = self._cache.get(key)
+            if cached is not None:
+                results[index] = cached
+            else:
+                missing.append((index, texts[index]))
+
+        if missing:
+            vectors = await self._request_embeddings([text for _, text in missing])
+            for (index, _), vector in zip(missing, vectors):
+                results[index] = vector
+                self._cache.put(cache_keys[index], vector)
+
+        return [results[index] for index in range(len(texts))]
+
+    async def _request_embeddings(self, texts: List[str]) -> List[List[float]]:
         url = f"{self.base_url}/embeddings"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -57,12 +152,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "dimensions": self.dimensions,
         }
 
+        client = _pooled_client(self.max_connections, self.timeout)
         last_error = "unknown error"
         for attempt in range(_EMBEDDING_RETRY_ATTEMPTS):
             retry_after = None
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(url, json=payload, headers=headers)
+                resp = await client.post(url, json=payload, headers=headers)
             except httpx.TransportError as exc:
                 last_error = f"transport error: {exc!s}"
             else:
@@ -153,9 +248,34 @@ class OpenAIChatProvider(ChatProvider):
             "max_tokens": max_tokens,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Chat provider error (status {resp.status_code}): {resp.text}")
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        client = _pooled_client(10, self.timeout)
+        last_error = "unknown error"
+        for attempt in range(_CHAT_RETRY_ATTEMPTS):
+            retry_after = None
+            try:
+                resp = await client.post(url, json=payload, headers=headers)
+            except httpx.TransportError as exc:
+                last_error = f"transport error: {exc!s}"
+            else:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"]
+                if resp.status_code not in _TRANSIENT_STATUS_CODES:
+                    raise RuntimeError(
+                        f"Chat provider error (status {resp.status_code}): {resp.text}"
+                    )
+                last_error = f"status {resp.status_code}: {resp.text[:300]}"
+                retry_after = resp.headers.get("retry-after")
+
+            if attempt < _CHAT_RETRY_ATTEMPTS - 1:
+                delay = _CHAT_RETRY_DELAYS[min(attempt, len(_CHAT_RETRY_DELAYS) - 1)]
+                if retry_after:
+                    try:
+                        delay = min(max(float(retry_after), delay), 30.0)
+                    except ValueError:
+                        pass
+                await asyncio.sleep(delay)
+
+        raise ProviderUnavailableError(
+            f"Chat provider unavailable after {_CHAT_RETRY_ATTEMPTS} attempts: {last_error}"
+        )

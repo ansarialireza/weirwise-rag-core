@@ -1,9 +1,12 @@
 import asyncio
 import datetime
 import logging
+import os
 import uuid
 from typing import Optional
-from sqlalchemy import text
+
+import numpy as np
+from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from server.app.models import IngestionJob, Document, DocumentChunk
@@ -13,6 +16,8 @@ from server.app.config import Settings
 from server.app.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+_INSERT_BATCH_SIZE = 500
 
 
 async def _heartbeat_loop(
@@ -62,6 +67,7 @@ async def process_document_job(
     worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
     stop_heartbeat = asyncio.Event()
     heartbeat_task = None
+    embeddings_path: Optional[str] = None
 
     try:
         # 1. Fetch and atomically claim / lock Job if not already claimed with token
@@ -120,14 +126,49 @@ async def process_document_job(
             chunk_overlap=settings.chunk_overlap,
         )
 
-        # 4. Generate embeddings in batches (staged in memory; previous DB chunks remain untouched!)
-        all_embeddings = []
-        if chunks:
+        if not chunks:
+            message = "No extractable text found in document"
+            logger.warning(f"Ingestion produced no chunks for doc {doc.id}: {message}")
+            doc.status = "failed"
+            doc.error_message = message
+            job.status = "failed"
+            job.error_message = message
+            job.locked_at = None
+            job.locked_by = None
+            await db.commit()
+            return
+
+        # 4. Generate embeddings into a disk-backed matrix. Staging on disk keeps
+        # worker RSS bounded: a 100k-chunk document would otherwise hold several
+        # hundred MB of float vectors inside the Python process.
+        os.makedirs(settings.storage_dir, exist_ok=True)
+        embeddings_path = os.path.join(
+            settings.storage_dir, f".embeddings-{doc.id}-{uuid.uuid4().hex}.npy"
+        )
+        dimensions = settings.embedding_dimensions
+        matrix = np.lib.format.open_memmap(
+            embeddings_path, mode="w+", dtype=np.float32, shape=(len(chunks), dimensions)
+        )
+        try:
             batch_size = settings.embedding_batch_size
-            for i in range(0, len(chunks), batch_size):
-                batch = chunks[i : i + batch_size]
+            for start in range(0, len(chunks), batch_size):
+                batch = chunks[start : start + batch_size]
                 embeddings = await embedding_provider.get_embeddings(batch)
-                all_embeddings.extend(embeddings)
+                if len(embeddings) != len(batch):
+                    raise ValueError(
+                        f"Embedding provider returned {len(embeddings)} vectors for "
+                        f"{len(batch)} chunks"
+                    )
+                batch_matrix = np.asarray(embeddings, dtype=np.float32)
+                if batch_matrix.ndim != 2 or batch_matrix.shape[1] != dimensions:
+                    raise ValueError(
+                        f"Embedding provider returned shape {batch_matrix.shape}, "
+                        f"expected (*, {dimensions})"
+                    )
+                matrix[start : start + len(batch)] = batch_matrix
+            matrix.flush()
+        finally:
+            del matrix
 
         # 5. ATOMIC CHUNK REPLACEMENT WITH FENCING TOKEN GUARD
         # Verify ownership token is still valid. If another worker stole the lease, rows_affected will be 0.
@@ -158,17 +199,30 @@ async def process_document_job(
             {"doc_id": str(doc.id)},
         )
 
-        for idx, (chunk_content, emb) in enumerate(zip(chunks, all_embeddings)):
-            chunk_record = DocumentChunk(
-                tenant_id=doc.tenant_id,
-                knowledge_base_id=doc.knowledge_base_id,
-                document_id=doc.id,
-                chunk_index=idx,
-                content=chunk_content,
-                chunk_metadata={"filename": doc.filename, "chunk_index": idx},
-                embedding=emb,
-            )
-            db.add(chunk_record)
+        staged = np.load(embeddings_path, mmap_mode="r")
+        try:
+            for start in range(0, len(chunks), _INSERT_BATCH_SIZE):
+                stop = min(start + _INSERT_BATCH_SIZE, len(chunks))
+                records = [
+                    {
+                        "id": uuid.uuid4(),
+                        "tenant_id": doc.tenant_id,
+                        "knowledge_base_id": doc.knowledge_base_id,
+                        "document_id": doc.id,
+                        "chunk_index": idx,
+                        "content": chunks[idx],
+                        "chunk_metadata": {
+                            "document_name": doc.filename,
+                            "filename": doc.filename,
+                            "chunk_index": idx,
+                        },
+                        "embedding": staged[idx].tolist(),
+                    }
+                    for idx in range(start, stop)
+                ]
+                await db.execute(insert(DocumentChunk), records)
+        finally:
+            del staged
 
         # Update document and job completion within the same transaction
         doc.status = "completed"
@@ -226,6 +280,11 @@ async def process_document_job(
         stop_heartbeat.set()
         if heartbeat_task:
             heartbeat_task.cancel()
+        if embeddings_path and os.path.exists(embeddings_path):
+            try:
+                os.remove(embeddings_path)
+            except OSError as cleanup_error:
+                logger.warning(f"Could not remove embedding staging file {embeddings_path}: {cleanup_error}")
         if close_db:
             await db.close()
 
