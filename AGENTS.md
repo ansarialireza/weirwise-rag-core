@@ -12,6 +12,8 @@ Inspect relevant implementation, tests, docs, configuration, and Git status befo
 
 Codex is explicitly authorized to commit and push changes to `develop` without further approval, including pushes that trigger automatic development deployment. Create and use feature branches and worktrees when useful. Merging into `main`, pushing directly to `main`, or triggering production deployment always requires explicit user approval. Never perform production deployment without that approval; do not assume repository/environment approval gates exist. Do not change deployment scripts without a dedicated implementation plan and review.
 
+For cross-repository agent roles, independent QA, verdict rules, model selection, and installed skills, follow the canonical standards in `../weirwise-brand/governance/AGENT_GOVERNANCE.md`, `../weirwise-brand/governance/QA_WORKFLOW.md`, `../weirwise-brand/governance/MODEL_GOVERNANCE.md`, `../weirwise-brand/governance/MODEL_SELECTION_MATRIX.md`, and `../weirwise-brand/governance/SKILLS_REGISTRY.md`. Use the safe QA runner at `../weirwise-brand/tools/qa/run_qa.py` for clean, isolated checks when that sibling repository is available. A separate QA context must inspect the actual Core/SDK diff; tests alone are not approval.
+
 ## Verification
 
 Run relevant checks when authorized and feasible, and report the exact commands and actual results. Never imply a test, migration, build, or deployment was run unless there is evidence. The documented checks are:
@@ -20,6 +22,8 @@ Run relevant checks when authorized and feasible, and report the exact commands 
 - `ruff format --check .`
 - `pytest server/tests packages/python-sdk/tests`
 - CI also runs Alembic migrations against its disposable PostgreSQL/pgvector service and builds the SDK and Core distributions. Do not run migrations against an unspecified or shared database.
+
+Pull requests must include the independent QA report and actual check evidence required by `.github/PULL_REQUEST_TEMPLATE.md`.
 
 ## Security and data handling
 
