@@ -9,6 +9,7 @@ class _FakeResponse:
     status_code = 200
 
     def __init__(self, payload):
+        self.is_closed = False
         self._payload = payload
 
     def json(self):
@@ -17,6 +18,7 @@ class _FakeResponse:
 
 class _FakeAsyncClient:
     def __init__(self, payload):
+        self.is_closed = False
         self.payload = payload
         self.requests = []
 
