@@ -256,7 +256,9 @@ async def process_document_job(
                 # Only transient provider failures are worth retrying; malformed input
                 # (for example binary bytes rejected by the UTF-8 chunk insert) would
                 # fail identically on every attempt.
-                retryable = isinstance(e, ProviderUnavailableError) and job.attempts < job.max_attempts
+                retryable = (
+                    isinstance(e, ProviderUnavailableError) and job.attempts < job.max_attempts
+                )
                 if retryable:
                     job.status = "pending"  # eligible for retry
                     should_retry_inline = settings.ingestion_mode == "inline"
@@ -284,12 +286,16 @@ async def process_document_job(
             try:
                 os.remove(embeddings_path)
             except OSError as cleanup_error:
-                logger.warning(f"Could not remove embedding staging file {embeddings_path}: {cleanup_error}")
+                logger.warning(
+                    f"Could not remove embedding staging file {embeddings_path}: {cleanup_error}"
+                )
         if close_db:
             await db.close()
 
 
-async def _retry_inline_job(job_id, settings: Settings, embedding_provider: EmbeddingProvider, delay: float = 2.0):
+async def _retry_inline_job(
+    job_id, settings: Settings, embedding_provider: EmbeddingProvider, delay: float = 2.0
+):
     """Re-runs a transiently failed inline ingestion after a backoff."""
     await asyncio.sleep(delay)
     try:

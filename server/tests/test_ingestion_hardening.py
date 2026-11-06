@@ -28,7 +28,9 @@ def test_extract_docx_includes_paragraphs_and_table_cells(tmp_path):
     path = tmp_path / "policy.docx"
     document.save(path)
 
-    text = extract_text_from_file(str(path), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    text = extract_text_from_file(
+        str(path), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
 
     assert "Return policy for damaged goods." in text
     assert "Window | 30 days" in text
@@ -63,7 +65,9 @@ async def _tenant_headers():
 
 
 async def _create_kb(client, headers):
-    res = await client.post("/api/v1/knowledge-bases", json={"name": "Ingestion KB"}, headers=headers)
+    res = await client.post(
+        "/api/v1/knowledge-bases", json={"name": "Ingestion KB"}, headers=headers
+    )
     assert res.status_code == 201
     return res.json()["id"]
 

@@ -84,7 +84,6 @@ class _EmbeddingCache:
             self._items.popitem(last=False)
 
 
-
 class EmbeddingProvider(ABC):
     @abstractmethod
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:

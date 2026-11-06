@@ -33,8 +33,10 @@ async def retrieve_relevant_chunks(
     bind = db.bind
     dialect_name = bind.dialect.name if bind else "postgresql"
 
-    kb_ids = list(knowledge_base_ids) if knowledge_base_ids else (
-        [knowledge_base_id] if knowledge_base_id else []
+    kb_ids = (
+        list(knowledge_base_ids)
+        if knowledge_base_ids
+        else ([knowledge_base_id] if knowledge_base_id else [])
     )
     if not kb_ids:
         return []
