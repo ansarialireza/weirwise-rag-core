@@ -1,7 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional, Literal
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Anchor the env file to the repository root so starting the service from a
+# different working directory cannot silently drop provider credentials.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -16,6 +21,9 @@ class Settings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
+    # Browser origins allowed to call Core directly (JSON list). Empty disables CORS;
+    # server-to-server callers such as the Platform are unaffected.
+    cors_allow_origins: list[str] = []
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/weirwise"
@@ -23,10 +31,17 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_timeout_seconds: int = 30
+    db_pool_timeout_seconds: int = 30
+    db_pool_recycle_seconds: int = 1800
+    db_statement_timeout_ms: int = 30000
+    # Connection reuse is required in production; test suites give each test its
+    # own event loop, so asyncpg connections must not outlive a single test.
+    db_pool_enabled: bool = True
 
     # Storage
     storage_dir: str = "./var/data/storage"
     max_upload_size_bytes: int = 50 * 1024 * 1024  # 50MB
+    upload_read_chunk_bytes: int = 1024 * 1024
 
     # Ingestion & Chunking
     ingestion_mode: Literal["inline", "worker"] = (
@@ -49,6 +64,13 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     embedding_timeout_seconds: float = 30.0
     embedding_batch_size: int = 64
+    # Bounded LRU cache for query embeddings (identical text -> vector). Set 0 to disable.
+    embedding_cache_size: int = 512
+    embedding_cache_ttl_seconds: int = 300
+    embedding_pool_connections: int = 20
+
+    # Retrieval
+    retrieval_hnsw_ef_search: int = 100
 
     # Chat / LLM Provider (OpenAI-compatible)
     chat_base_url: str = "https://api.openai.com/v1"
@@ -89,7 +111,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="WEIRWISE_",
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )

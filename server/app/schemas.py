@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 # --- Health ---
@@ -196,7 +196,14 @@ class DocumentUploadResponse(BaseModel):
 
 # --- Search & Retrieval ---
 class SearchRequest(BaseModel):
-    knowledge_base_id: UUID = Field(..., description="Knowledge base to search against")
+    knowledge_base_id: Optional[UUID] = Field(
+        None, description="Knowledge base to search against (single-KB shorthand)"
+    )
+    knowledge_base_ids: Optional[List[UUID]] = Field(
+        None,
+        max_length=50,
+        description="Search several knowledge bases with one query embedding",
+    )
     query: str = Field(
         ...,
         min_length=1,
@@ -222,6 +229,14 @@ class SearchRequest(BaseModel):
         description="Optional key-value pairs to filter chunk metadata.",
         examples=[{"environment": "production"}],
     )
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> "SearchRequest":
+        if not self.knowledge_base_id and not self.knowledge_base_ids:
+            raise ValueError("Provide knowledge_base_id or knowledge_base_ids")
+        if self.knowledge_base_id and self.knowledge_base_ids:
+            raise ValueError("Provide either knowledge_base_id or knowledge_base_ids, not both")
+        return self
 
     model_config = ConfigDict(
         json_schema_extra={

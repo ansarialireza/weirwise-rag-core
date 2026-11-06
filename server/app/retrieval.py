@@ -12,18 +12,20 @@ logger = logging.getLogger(__name__)
 async def retrieve_relevant_chunks(
     db: AsyncSession,
     tenant_id: UUID,
-    knowledge_base_id: UUID,
+    knowledge_base_id: Optional[UUID],
     query: str,
     embedding_provider: EmbeddingProvider,
     top_k: int = 4,
     score_threshold: Optional[float] = None,
     metadata_filters: Optional[Dict[str, Any]] = None,
+    knowledge_base_ids: Optional[List[UUID]] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieve top-k chunks for query using pgvector cosine distance, scoped to tenant & KB.
+    """Retrieve top-k chunks for query using pgvector cosine distance, scoped to tenant & KB(s).
 
     score_threshold (optional): filters out chunks whose similarity_score is strictly less than this threshold.
+    knowledge_base_ids (optional): search several KBs with a single query embedding.
     """
-    # 1. Generate query embedding
+    # 1. Generate query embedding (cached for identical text by the provider)
     query_embeddings = await embedding_provider.get_embeddings([query])
     query_vector = query_embeddings[0]
 
@@ -31,9 +33,31 @@ async def retrieve_relevant_chunks(
     bind = db.bind
     dialect_name = bind.dialect.name if bind else "postgresql"
 
+    kb_ids = (
+        list(knowledge_base_ids)
+        if knowledge_base_ids
+        else ([knowledge_base_id] if knowledge_base_id else [])
+    )
+    if not kb_ids:
+        return []
+
     results = []
 
     if dialect_name == "postgresql":
+        from sqlalchemy import text as sa_text
+
+        # HNSW is approximate: a small ef_search plus a selective KB filter can
+        # return fewer rows than requested. Raise it per transaction; exact plans
+        # ignore the hint.
+        try:
+            from server.app.config import get_settings
+
+            ef_search = max(40, int(get_settings().retrieval_hnsw_ef_search))
+            async with db.begin_nested():
+                await db.execute(sa_text(f"SET LOCAL hnsw.ef_search = {ef_search}"))
+        except Exception:
+            pass
+
         # Native pgvector cosine distance: embedding.cosine_distance(query_vector)
         # Cosine distance ranges from 0 (identical) to 2 (opposite). Similarity = 1 - distance.
         distance_col = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
@@ -41,7 +65,7 @@ async def retrieve_relevant_chunks(
         # Base filter conditions
         conditions = [
             DocumentChunk.tenant_id == tenant_id,
-            DocumentChunk.knowledge_base_id == knowledge_base_id,
+            DocumentChunk.knowledge_base_id.in_(kb_ids),
             DocumentChunk.embedding.isnot(None),
         ]
         # In cosine distance: similarity = 1 - distance >= score_threshold  <=>  distance <= 1 - score_threshold
@@ -87,7 +111,7 @@ async def retrieve_relevant_chunks(
 
         stmt = select(DocumentChunk).where(
             DocumentChunk.tenant_id == tenant_id,
-            DocumentChunk.knowledge_base_id == knowledge_base_id,
+            DocumentChunk.knowledge_base_id.in_(kb_ids),
         )
         res = await db.execute(stmt)
         chunks = res.scalars().all()

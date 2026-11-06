@@ -2,8 +2,8 @@
 
 > Lightweight, reliable, modular open-source RAG infrastructure for developers.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-6B7078.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-6B7078.svg)](https://www.python.org/downloads/)
 
 Weirwise Core provides a self-hostable, production-ready Retrieval-Augmented Generation (RAG) backend. It handles multi-tenant document ingestion, chunking, vector embeddings, similarity search, and conversation management so you can integrate AI knowledge retrieval into your applications in minutes.
 

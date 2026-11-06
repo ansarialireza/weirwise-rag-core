@@ -99,10 +99,14 @@ X-API-Key: ww_live_xxxxxxxxxxxxxxxxxxxxxxxx
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_allow_origins,
+    # Core authenticates with an X-API-Key header, not cookies. Keeping
+    # credentials off prevents a wildcard origin from exposing tenant data
+    # to arbitrary browsers.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["X-API-Key", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID", "X-Response-Time-Ms"],
 )
 
 
@@ -111,12 +115,16 @@ async def correlation_id_middleware(request: Request, call_next):
     # Validate and sanitize incoming X-Request-ID or generate new UUID
     req_id = _sanitize_request_id(request.headers.get("X-Request-ID"))
     start_time = time.perf_counter()
+    response = None
     try:
         response = await call_next(request)
     finally:
         duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
-    response.headers["X-Request-ID"] = req_id
-    response.headers["X-Response-Time-Ms"] = str(duration_ms)
+        if response is not None:
+            response.headers["X-Request-ID"] = req_id
+            response.headers["X-Response-Time-Ms"] = str(duration_ms)
+        else:
+            logger.error(f"Request {req_id} failed after {duration_ms} ms")
     return response
 
 
