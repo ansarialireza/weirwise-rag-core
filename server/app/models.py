@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Index,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.types import TypeDecorator, CHAR
@@ -141,6 +142,10 @@ class Document(Base):
         default=datetime.datetime.utcnow,
         onupdate=datetime.datetime.utcnow,
         nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("knowledge_base_id", "content_hash", name="uq_documents_kb_content_hash"),
     )
 
 

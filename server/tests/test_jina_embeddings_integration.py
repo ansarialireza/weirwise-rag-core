@@ -16,22 +16,22 @@ pytestmark = pytest.mark.asyncio
 
 
 def get_jina_token_from_secrets() -> str:
-    """Safely retrieves Jina token from test-secrets without exposing it in logs."""
+    """Safely retrieves Jina token from environment or test-secrets."""
+    token = os.getenv("WEIRWISE_EMBEDDING_API_KEY") or os.getenv("JINA_API_KEY")
+    if token and token.startswith("jina_"):
+        return token
+
     secrets_path = r"C:\Users\Alireza\GitHub\test-secrets\.env.testing"
-    if not os.path.exists(secrets_path):
-        pytest.skip(f"Secrets file not found at {secrets_path}")
+    if os.path.exists(secrets_path):
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("jina_"):
+                    token = stripped
+                    return token
 
-    token = None
-    with open(secrets_path, "r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
-            if stripped.startswith("jina_"):
-                token = stripped
-                break
-
-    if not token:
-        pytest.skip("No Jina AI token found in test-secrets/.env.testing")
-    return token
+    pytest.skip("No Jina AI token found in environment or test-secrets")
+    return ""
 
 
 async def test_jina_real_api_embedding_request():
