@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import re
 from typing import List
@@ -5,13 +7,14 @@ from pypdf import PdfReader
 
 
 def extract_text_from_file(file_path: str, mime_type: str) -> str:
-    """Extract clean text from PDF, DOCX, Markdown, or plain text file."""
+    """Extract clean text from PDF, DOCX, CSV, Markdown, or plain text file."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
     lower_path = file_path.lower()
     is_pdf = "pdf" in (mime_type or "").lower() or lower_path.endswith(".pdf")
     is_docx = "wordprocessingml" in (mime_type or "").lower() or lower_path.endswith(".docx")
+    is_csv = "csv" in (mime_type or "").lower() or lower_path.endswith(".csv")
 
     if is_pdf:
         with open(file_path, "rb") as fh:
@@ -36,6 +39,21 @@ def extract_text_from_file(file_path: str, mime_type: str) -> str:
                 if cells:
                     paragraphs.append(" | ".join(cells))
         return "\n\n".join(paragraphs)
+
+    if is_csv:
+        with open(file_path, "r", encoding="utf-8", errors="strict") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if not rows:
+                return ""
+            header = rows[0]
+            lines = []
+            for row in rows[1:]:
+                if not any(row):
+                    continue
+                line_parts = [f"{h.strip()}: {v.strip()}" for h, v in zip(header, row) if v.strip()]
+                lines.append(" | ".join(line_parts))
+            return "\n".join(lines)
 
     # Plain text, markdown, etc. Reject undecodable bytes instead of indexing replacement chars.
     with open(file_path, "r", encoding="utf-8", errors="strict") as f:

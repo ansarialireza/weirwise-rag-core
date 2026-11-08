@@ -28,10 +28,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/weirwise"
     database_sync_url: str = "postgresql://postgres:postgres@127.0.0.1:5432/weirwise"
-    db_pool_size: int = 10
-    db_max_overflow: int = 20
-    db_timeout_seconds: int = 30
-    db_pool_timeout_seconds: int = 30
+    db_pool_size: int = 30
+    db_max_overflow: int = 50
+    db_timeout_seconds: int = 60
+    db_pool_timeout_seconds: int = 60
     db_pool_recycle_seconds: int = 1800
     db_statement_timeout_ms: int = 30000
     # Connection reuse is required in production; test suites give each test its
