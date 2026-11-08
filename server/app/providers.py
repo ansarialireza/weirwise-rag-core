@@ -84,6 +84,24 @@ class _EmbeddingCache:
             self._items.popitem(last=False)
 
 
+_shared_embedding_cache: _EmbeddingCache | None = None
+
+
+def get_shared_embedding_cache(max_size: int, ttl_seconds: int) -> _EmbeddingCache:
+    """Singleton query embedding cache so repeated searches reuse vectors across requests."""
+    global _shared_embedding_cache
+    if _shared_embedding_cache is None:
+        _shared_embedding_cache = _EmbeddingCache(max_size, ttl_seconds)
+    return _shared_embedding_cache
+
+
+def clear_shared_embedding_cache() -> None:
+    """Clear shared query embedding cache (useful for testing or cache invalidation)."""
+    global _shared_embedding_cache
+    if _shared_embedding_cache is not None:
+        _shared_embedding_cache._items.clear()
+
+
 class EmbeddingProvider(ABC):
     @abstractmethod
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -99,7 +117,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self.dimensions = settings.embedding_dimensions
         self.timeout = settings.embedding_timeout_seconds
         self.max_connections = settings.embedding_pool_connections
-        self._cache = _EmbeddingCache(
+        self._cache = get_shared_embedding_cache(
             settings.embedding_cache_size, settings.embedding_cache_ttl_seconds
         )
 

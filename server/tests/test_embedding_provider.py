@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from server.app.config import Settings
-from server.app.providers import OpenAIEmbeddingProvider
+from server.app.providers import OpenAIEmbeddingProvider, clear_shared_embedding_cache
 
 
 class _FakeResponse:
@@ -68,6 +68,7 @@ async def test_embedding_provider_tolerates_missing_index(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_embedding_provider_rejects_vector_count_mismatch(monkeypatch):
+    clear_shared_embedding_cache()
     payload = {
         "object": "list",
         "data": [{"object": "embedding", "index": 0, "embedding": [1.0, 0.0, 0.0]}],
@@ -75,4 +76,4 @@ async def test_embedding_provider_rejects_vector_count_mismatch(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(payload))
 
     with pytest.raises(RuntimeError, match="returned 1 vectors for 2 inputs"):
-        await _provider().get_embeddings(["a", "b"])
+        await _provider().get_embeddings(["uncached_x", "uncached_y"])
