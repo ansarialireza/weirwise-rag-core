@@ -52,7 +52,7 @@ from server.app.worker import process_document_job
 
 router = APIRouter(prefix="/v1")
 
-_TEXT_EXTENSIONS = {".txt", ".text", ".md", ".markdown"}
+_TEXT_EXTENSIONS = {".txt", ".text", ".md", ".markdown", ".csv"}
 _UPLOAD_EXTENSIONS = _TEXT_EXTENSIONS | {".pdf", ".docx"}
 
 
