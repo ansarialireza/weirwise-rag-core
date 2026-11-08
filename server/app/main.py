@@ -154,7 +154,7 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
         db_status = "healthy"
     except Exception as e:
         logger.error(f"Readiness check database failure: {e}")
-        db_status = f"unhealthy: {str(e)}"
+        db_status = f"unhealthy: {type(e).__name__}"
     return HealthResponse(
         status="ready" if db_status == "healthy" else "degraded",
         database=db_status,
