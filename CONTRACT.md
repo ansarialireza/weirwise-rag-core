@@ -1,88 +1,69 @@
-# Weirwise Core API Contract (v1.0.0)
+# Weirwise Core REST API Contract (1.0.0)
 
-## Overview
-Weirwise Core provides a modular, lightweight HTTP REST API for multi-tenant document ingestion, vector retrieval, and RAG assistant execution.
+This document summarizes the public REST contract implemented by `server/app/`. Exact generated
+schemas are available from the FastAPI OpenAPI document in a running development/test service;
+route declarations and Pydantic models are authoritative if this summary differs.
 
-## Base URL
-`/api/v1`
+## Base path and authentication
 
-## Authentication
-Every tenant-scoped request must include the `X-API-Key` HTTP header:
-```http
-X-API-Key: ww_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-API keys are hashed (SHA-256) on creation. The raw key is never stored in plaintext and is only visible once upon generation.
-
----
+- The service mounts the versioned API under `/api/v1`.
+- Tenant-scoped API requests use the `X-API-Key` header. The server stores a SHA-256 hash of a
+  generated key; raw keys are shown only when created by the administrative CLI.
+- Health endpoints are unauthenticated.
+- Core tenants and keys are owned and managed by Core. Platform identities/credentials are not
+  interchangeable with Core tenant keys.
 
 ## Endpoints
 
-### 1. Health Checks
-- `GET /health/live`: Unauthenticated liveness probe returning `{"status": "alive", "database": "unverified", "version": "1.0.0"}`.
-- `GET /health/ready`: Database connectivity readiness check returning `{"status": "ready" | "degraded", "database": "healthy" | "unreachable", "version": "1.0.0"}`.
+### Health
 
-### 2. Knowledge Bases
-- `POST /api/v1/knowledge-bases`: Create a knowledge base scoped to authenticated tenant.
-  - Body: `{"name": str, "description": Optional[str]}`
-- `GET /api/v1/knowledge-bases`: List all knowledge bases for tenant (supports `limit: int = 50, offset: int = 0`).
-- `GET /api/v1/knowledge-bases/{kb_id}`: Retrieve a knowledge base by ID.
-- `DELETE /api/v1/knowledge-bases/{kb_id}`: Delete knowledge base and cascade delete documents and chunks (HTTP 204).
+- `GET /health/live` — process liveness; returns `status: alive`, `database: unverified`, and the
+  configured service version.
+- `GET /health/ready` — checks the database. A healthy result has `status: ready` and
+  `database: healthy`; a failed check returns `status: degraded` and an `unhealthy: <exception
+  type>` database value.
 
-### 3. Documents
-- `POST /api/v1/documents/upload`: Upload file (`multipart/form-data`) with `knowledge_base_id` and `file`.
-  - Validates file size against `WEIRWISE_MAX_UPLOAD_SIZE_BYTES` (HTTP 413 if exceeded).
-  - Enqueues asynchronous ingestion job and returns HTTP 202 with `DocumentUploadResponse`.
-- `GET /api/v1/documents/{doc_id}`: Retrieve document status and metadata.
-- `GET /api/v1/knowledge-bases/{kb_id}/documents`: List documents in knowledge base (supports pagination).
-- `DELETE /api/v1/documents/{doc_id}`: Delete document and its chunk vectors (HTTP 204).
+### Knowledge bases and documents
 
-### 4. Vector Search & Retrieval
-- `POST /api/v1/search`:
-  - Request:
-    ```json
-    {
-      "knowledge_base_id": "UUID",
-      "query": "str (min_length=1)",
-      "top_k": 4,
-      "score_threshold": 0.75,
-      "metadata_filters": {"category": "engineering"}
-    }
-    ```
-    - `score_threshold` (optional float between 0.0 and 1.0): Filters results to only those whose cosine similarity meets or exceeds this threshold.
-    - `metadata_filters` (optional JSON object): Key-value pairs for metadata filtering.
-  - Response:
-    ```json
-    {
-      "results": [
-        {
-          "chunk_id": "...",
-          "document_id": "...",
-          "content": "...",
-          "metadata": {},
-          "similarity_score": 0.89,
-          "rank": 1
-        }
-      ],
-      "total": 1
-    }
-    ```
+- `POST`, `GET /api/v1/knowledge-bases`; `GET`, `DELETE /api/v1/knowledge-bases/{kb_id}`.
+- `POST /api/v1/documents/upload` accepts multipart `knowledge_base_id` and `file`, validates
+  supported file extensions and configured size, deduplicates by knowledge-base/content hash, and
+  returns `202 Accepted` with a document/job response.
+- `GET /api/v1/documents/{doc_id}` and `GET /api/v1/knowledge-bases/{kb_id}/documents` expose
+  tenant-scoped document state.
+- `DELETE /api/v1/documents/{doc_id}` removes a tenant-owned document.
+- Ingestion states include `pending`, `processing`, `completed`, and `failed`.
 
-### 5. Assistants & Chat
-- `POST /api/v1/assistants`: Create an assistant.
-  - Body: `{"name": str, "knowledge_base_id": Optional[UUID], "system_instructions": Optional[str], "model": str, "temperature": float, "max_tokens": int}`
-- `GET /api/v1/assistants`: List assistants.
-- `GET /api/v1/assistants/{assistant_id}`: Retrieve assistant.
-- `DELETE /api/v1/assistants/{assistant_id}`: Delete assistant.
-- `POST /api/v1/assistants/{assistant_id}/chat`: Execute grounded RAG conversation.
-  - Body: `{"message": str, "conversation_id": Optional[UUID]}`
-  - Response:
-    ```json
-    {
-      "conversation_id": "...",
-      "message_id": "...",
-      "role": "assistant",
-      "content": "...",
-      "sources": [...]
-    }
-    ```
-- `GET /api/v1/conversations/{conversation_id}/messages`: Fetch ordered conversation history.
+### Search
+
+- `POST /api/v1/search` performs tenant-scoped semantic search.
+- The request accepts a non-empty `query`, `top_k`, optional `score_threshold`, optional
+  `metadata_filters`, and either a `knowledge_base_id` or multiple `knowledge_base_ids`.
+- `score_threshold` is a minimum cosine-similarity value in the supported schema range. Results
+  include chunk/document identifiers, content, metadata, similarity score, and rank.
+
+### Assistants and conversations
+
+- `POST`, `GET /api/v1/assistants`; `GET`, `DELETE /api/v1/assistants/{assistant_id}`.
+- `POST /api/v1/assistants/{assistant_id}/chat` accepts a message and optional conversation ID and
+  returns an assistant message with source attribution.
+- `GET /api/v1/conversations/{conversation_id}/messages` returns tenant-scoped conversation
+  history.
+
+## Compatibility rules
+
+The REST API is Core's public service boundary and is consumed independently of the Python SDK.
+Treat route paths, authentication, required/optional fields, defaults, status codes, error behavior,
+tenant scoping, ingestion states, similarity-score semantics, and source fields as compatibility
+surface.
+
+For a contract change:
+
+1. Inspect both route and Pydantic schema implementations and all SDK/Platform callers.
+2. Decide whether the change is backward-compatible. For a breaking change, document the new
+   contract and migration/deprecation strategy before release.
+3. Add route/contract tests and corresponding SDK tests; update this document and SDK docs.
+4. Preserve tenant scoping and Core's independence from Platform.
+
+Core package releases (for example, `weirwise-core` 1.0.0) are independent from Weirwise product
+roadmap versions such as V1.0. Do not use product version names for Core API or package releases.

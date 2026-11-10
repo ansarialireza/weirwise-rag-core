@@ -4,7 +4,10 @@
 
 Weirwise Core is independently reusable RAG infrastructure: a FastAPI REST service, asynchronous ingestion worker, PostgreSQL/pgvector persistence, retrieval and provider adapters, and a separately distributable typed Python SDK under `packages/python-sdk/`. This repository and its software are licensed under MIT; preserve the license and copyright notices. Keep Core independent from Platform and other product repositories. Preserve the public REST API and SDK contracts described in `CONTRACT.md` and the SDK package documentation. Treat changes to routes, schemas, authentication, errors, and SDK behavior as compatibility-sensitive; document and test any intentional contract change.
 
-Keep ingestion, embedding, provider, retrieval, persistence, API, and worker responsibilities at their existing boundaries. Avoid new dependencies unless the task requires them and a smaller existing-library solution is insufficient. The project declares Python >=3.11; preserve that supported range and the configured Ruff/Pytest conventions. Consult `README.md`, `CONTRIBUTING.md`, `CONTRACT.md`, `SECURITY.md`, `pyproject.toml`, and `.github/workflows/ci.yml` for canonical details rather than duplicating them here.
+Keep ingestion, embedding, provider, retrieval, persistence, API, and worker responsibilities at their existing boundaries. Avoid new dependencies unless the task requires them and a smaller existing-library solution is insufficient. The server declares Python >=3.11; the separately packaged SDK declares Python >=3.9. Preserve both supported ranges and the configured Ruff/Pytest conventions. Consult `README.md`, `CONTRIBUTING.md`, `CONTRACT.md`, `SECURITY.md`, `docs/ARCHITECTURE.md`, the focused `docs/` engineering guides, `pyproject.toml`, and `.github/workflows/ci.yml` for canonical details.
+
+The local instructions and documentation in this repository define the minimum workflow; Brand is
+an optional shared reference, not a prerequisite for working on Core.
 
 ## Working practices
 
@@ -12,7 +15,11 @@ Inspect relevant implementation, tests, docs, configuration, and Git status befo
 
 Codex is explicitly authorized to commit and push changes to `develop` without further approval, including pushes that trigger automatic development deployment. Create and use feature branches and worktrees when useful. Merging into `main`, pushing directly to `main`, or triggering production deployment always requires explicit user approval. Never perform production deployment without that approval; do not assume repository/environment approval gates exist. Do not change deployment scripts without a dedicated implementation plan and review.
 
-For cross-repository agent roles, independent QA, verdict rules, model selection, and installed skills, follow the canonical standards in `../weirwise-brand/governance/AGENT_GOVERNANCE.md`, `../weirwise-brand/governance/QA_WORKFLOW.md`, `../weirwise-brand/governance/MODEL_GOVERNANCE.md`, `../weirwise-brand/governance/MODEL_SELECTION_MATRIX.md`, and `../weirwise-brand/governance/SKILLS_REGISTRY.md`. Use the safe QA runner at `../weirwise-brand/tools/qa/run_qa.py` for clean, isolated checks when that sibling repository is available. A separate QA context must inspect the actual Core/SDK diff; tests alone are not approval.
+Keep changes focused and independently reviewable; tests do not replace inspection of the actual
+diff. Pull requests must include the local CI/check evidence and review artifacts required by this
+repository. Cross-repository governance in Brand may be consulted when available, but this
+repository's instructions, tests, and local docs define the minimum workflow and do not require
+Brand to be present.
 
 ## Verification
 

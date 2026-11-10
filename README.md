@@ -13,7 +13,7 @@ Weirwise Core provides a self-hostable, production-ready Retrieval-Augmented Gen
 
 - **Strict Multi-Tenant Isolation**: Every document, chunk, assistant, and query is scoped strictly to authenticated tenants.
 - **Fast PostgreSQL / pgvector Retrieval**: Native vector similarity operations without external vector databases or in-memory bloat.
-- **Asynchronous Ingestion**: Heavy text extraction (PDF, TXT, Markdown) and embedding generation are processed asynchronously with background worker queues.
+- **Asynchronous Ingestion**: Heavy text extraction (PDF, DOCX, CSV, TXT, Markdown) and embedding generation are processed asynchronously by the database-backed worker.
 - **Secure Authentication**: SHA-256 hashed API keys; secrets are never stored in plaintext.
 - **Grounded AI Assistants**: Context construction with untrusted data boundaries and precise source attribution.
 - **Independent Python SDK**: Clean, typed client for rapid integration into Python backends.
@@ -36,6 +36,9 @@ Weirwise Core provides a self-hostable, production-ready Retrieval-Augmented Gen
     │  Ingestion Worker │───────────────────┘
     └───────────────────┘
 ```
+
+For the implemented module map, request lifecycle, provider/storage boundaries, retrieval behavior,
+testing, performance mechanisms, and SDK release conventions, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -87,7 +90,7 @@ client = Weirwise(
 # 1. Create a Knowledge Base
 kb = client.knowledge_bases.create(name="Product Docs")
 
-# 2. Upload Document (PDF, Markdown, TXT)
+# 2. Upload Document (PDF, DOCX, CSV, Markdown, TXT)
 doc = client.documents.upload(
     knowledge_base_id=kb.id,
     path="./docs/handbook.pdf",
@@ -131,7 +134,7 @@ Weirwise is configured via environment variables or a `.env` file. See [.env.exa
 |---|---|---|
 | `WEIRWISE_DATABASE_URL` | `postgresql+asyncpg://...` | Asynchronous PostgreSQL connection string |
 | `WEIRWISE_DATABASE_SYNC_URL` | `postgresql://...` | Sync connection string for Alembic migrations |
-| `WEIRWISE_STORAGE_DIR` | `./data/storage` | Local directory for raw uploaded files |
+| `WEIRWISE_STORAGE_DIR` | `./var/data/storage` | Local directory for raw uploaded files; configure a private location outside tracked source data |
 | `WEIRWISE_EMBEDDING_API_KEY` | None | OpenAI API key for embeddings |
 | `WEIRWISE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
 | `WEIRWISE_CHAT_API_KEY` | None | OpenAI API key for assistant chat |

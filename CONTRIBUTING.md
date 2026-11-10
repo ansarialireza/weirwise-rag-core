@@ -6,8 +6,8 @@ Thank you for your interest in contributing to Weirwise Core!
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/weirwise/weirwise-core.git
-   cd weirwise-core
+   git clone https://github.com/ansarialireza/weirwise-rag-core.git
+   cd weirwise-rag-core
    ```
 
 2. **Create Python virtual environment**:
