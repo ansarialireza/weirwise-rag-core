@@ -18,6 +18,7 @@ async def test_health_live_endpoint_version():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_health_ready_endpoint_version():
     settings = get_settings()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -29,6 +30,7 @@ async def test_health_ready_endpoint_version():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_cli_check_db_command():
     exit_code = await check_db_cmd()
     assert exit_code == 0

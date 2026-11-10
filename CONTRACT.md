@@ -12,6 +12,8 @@ route declarations and Pydantic models are authoritative if this summary differs
 - Health endpoints are unauthenticated.
 - Core tenants and keys are owned and managed by Core. Platform identities/credentials are not
   interchangeable with Core tenant keys.
+- Core tenant IDs are an infrastructure boundary owned by Core; they are not Platform customer
+  accounts. Core must remain reusable without Platform account, workspace, or membership concepts.
 
 ## Endpoints
 

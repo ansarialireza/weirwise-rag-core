@@ -37,6 +37,10 @@ ruff format --check .
 pytest server/tests packages/python-sdk/tests
 ```
 
+PostgreSQL/pgvector tests are skipped unless `RUN_POSTGRES_TESTS=1` is set and the configured
+database is disposable. Live provider integration tests additionally require `RUN_LIVE_CORE_TESTS=1`
+and credentials supplied through environment variables; they may send test input to the provider.
+
 ## Submitting Pull Requests
 - Keep PRs focused on a single responsibility.
 - Include unit and integration tests for new functionality.

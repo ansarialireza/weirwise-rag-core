@@ -117,7 +117,7 @@ def cli():
     admin_sub = admin_parser.add_subparsers(dest="subcommand")
 
     create_tenant_p = admin_sub.add_parser("create-tenant")
-    create_tenant_p.add_argument("--name", required=True, help="Tenant workspace name")
+    create_tenant_p.add_argument("--name", required=True, help="Tenant display name")
     create_tenant_p.add_argument(
         "--key-name", default="default", help="Descriptive name for the API key"
     )

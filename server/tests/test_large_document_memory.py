@@ -8,7 +8,7 @@ from server.app.models import Tenant, KnowledgeBase, Document, IngestionJob
 from server.app.worker import process_document_job
 from server.app.providers import EmbeddingProvider
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.postgres]
 
 
 class DummyEmbeddingProvider(EmbeddingProvider):
@@ -28,10 +28,9 @@ async def setup_db():
     yield
 
 
-async def test_large_document_bounded_memory_ingestion():
+async def test_large_document_bounded_memory_ingestion(tmp_path):
     """Verify that a large (~2 MB / ~250k words) document stages in-memory and ingests reliably within memory bounds."""
-    storage_dir = "./var/data/test_storage"
-    os.makedirs(storage_dir, exist_ok=True)
+    storage_dir = str(tmp_path)
     file_path = os.path.join(storage_dir, f"{uuid.uuid4()}_large.txt")
 
     # Generate ~2.5 MB of structured text content

@@ -9,7 +9,7 @@ from server.app.models import Tenant, KnowledgeBase, Document, IngestionJob, Doc
 from server.app.worker import process_document_job
 from server.app.providers import EmbeddingProvider
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.postgres]
 
 
 class MockFailingProvider(EmbeddingProvider):
@@ -32,10 +32,9 @@ async def setup_db():
     yield
 
 
-async def test_failure_during_embedding_preserves_original_chunks():
+async def test_failure_during_embedding_preserves_original_chunks(tmp_path):
     """Verify that failure during embedding generation leaves original chunks intact and updates job/document status."""
-    storage_dir = "./var/data/test_storage"
-    os.makedirs(storage_dir, exist_ok=True)
+    storage_dir = str(tmp_path)
     file_path = os.path.join(storage_dir, f"{uuid.uuid4()}.txt")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("Line 1 text.\nLine 2 text.\nLine 3 text.")
@@ -110,10 +109,9 @@ async def test_failure_during_embedding_preserves_original_chunks():
         os.remove(file_path)
 
 
-async def test_worker_fencing_token_rejection():
+async def test_worker_fencing_token_rejection(tmp_path):
     """Verify that a worker whose claim token was invalidated (due to lease expiration/reclaim) is rejected from committing."""
-    storage_dir = "./var/data/test_storage"
-    os.makedirs(storage_dir, exist_ok=True)
+    storage_dir = str(tmp_path)
     file_path = os.path.join(storage_dir, f"{uuid.uuid4()}.txt")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("Fencing test content.")
@@ -192,7 +190,7 @@ async def test_worker_fencing_token_rejection():
         os.remove(file_path)
 
 
-async def test_deterministic_stale_worker_cannot_overwrite_completed_results():
+async def test_deterministic_stale_worker_cannot_overwrite_completed_results(tmp_path):
     """Deterministic regression test required by audit:
     1. Worker A claims job.
     2. Worker A pauses before its final database transaction (simulated with barrier/event).
@@ -202,8 +200,7 @@ async def test_deterministic_stale_worker_cannot_overwrite_completed_results():
     6. Assert Worker A cannot replace Worker B's chunks, overwrite document status, or mark job completed.
     """
 
-    storage_dir = "./var/data/test_storage"
-    os.makedirs(storage_dir, exist_ok=True)
+    storage_dir = str(tmp_path)
     file_path = os.path.join(storage_dir, f"{uuid.uuid4()}_fencing.txt")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("Deterministic fencing test content.")

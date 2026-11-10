@@ -9,6 +9,10 @@ Keep ingestion, embedding, provider, retrieval, persistence, API, and worker res
 The local instructions and documentation in this repository define the minimum workflow; Brand is
 an optional shared reference, not a prerequisite for working on Core.
 
+Core tenants are a Core-owned API-key isolation mechanism, not Platform customer accounts or
+workspaces. Keep Platform account ownership, authentication, and authorization outside Core; any
+Platform integration must use the public REST contract and explicitly authorized Core credentials.
+
 ## Working practices
 
 Inspect relevant implementation, tests, docs, configuration, and Git status before editing. Plan multi-file, architectural, security-sensitive, API/SDK, and migration work before implementation. Keep changes focused. Add or update tests for meaningful behavior changes, including API and SDK compatibility where relevant. Follow existing Python style and configuration; use type annotations and clear async/resource lifecycle handling consistent with neighboring code.
@@ -28,6 +32,9 @@ Run relevant checks when authorized and feasible, and report the exact commands 
 - `ruff check .`
 - `ruff format --check .`
 - `pytest server/tests packages/python-sdk/tests`
+- PostgreSQL/pgvector tests require a disposable database and `RUN_POSTGRES_TESTS=1`; provider
+  integrations require explicit `RUN_LIVE_CORE_TESTS=1` and credentials supplied through the
+  environment. Never point either test mode at a shared or production database.
 - CI also runs Alembic migrations against its disposable PostgreSQL/pgvector service and builds the SDK and Core distributions. Do not run migrations against an unspecified or shared database.
 
 Pull requests must include the independent QA report and actual check evidence required by `.github/PULL_REQUEST_TEMPLATE.md`.

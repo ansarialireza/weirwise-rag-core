@@ -8,6 +8,8 @@ from server.app.database import AsyncSessionLocal
 from server.app.main import app
 from server.app.models import APIKey, Tenant
 
+pytestmark = [pytest.mark.asyncio, pytest.mark.postgres]
+
 
 async def _tenant():
     raw_key, key_hash = generate_api_key(prefix="ww_multikb_test_")

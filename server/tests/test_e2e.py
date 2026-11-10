@@ -1,6 +1,8 @@
-import os
-import pytest
 import asyncio
+import tempfile
+from pathlib import Path
+
+import pytest
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from server.app.main import app
@@ -8,10 +10,8 @@ from server.app.database import get_db, Base
 from server.app.models import Tenant, APIKey
 from server.app.auth import generate_api_key
 
-TEST_DB_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "..", "var", "databases", "test", "test_e2e.db"
-)
-os.makedirs(os.path.dirname(TEST_DB_FILE), exist_ok=True)
+_test_database_directory = tempfile.TemporaryDirectory(prefix="weirwise-core-e2e-")
+TEST_DB_FILE = str(Path(_test_database_directory.name) / "test_e2e.db")
 TEST_DATABASE_URL = f"sqlite+aiosqlite:///{TEST_DB_FILE}"
 
 engine = create_async_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -26,7 +26,6 @@ async def override_get_db():
 
 @pytest.fixture(scope="function", autouse=True)
 def setup_test_db():
-    os.makedirs(os.path.dirname(TEST_DB_FILE), exist_ok=True)
     app.dependency_overrides[get_db] = override_get_db
 
     async def init_models():
@@ -41,11 +40,6 @@ def setup_test_db():
 
         async def cleanup():
             await engine.dispose()
-            if os.path.exists(TEST_DB_FILE):
-                try:
-                    os.remove(TEST_DB_FILE)
-                except OSError:
-                    pass
 
         asyncio.run(cleanup())
 

@@ -5,7 +5,7 @@ from server.app.database import AsyncSessionLocal
 from server.app.models import Tenant, APIKey
 from server.app.auth import generate_api_key
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.postgres]
 
 
 async def test_comprehensive_security_cross_tenant_isolation():

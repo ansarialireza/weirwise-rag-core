@@ -20,8 +20,19 @@ ruff format --check .
 pytest server/tests packages/python-sdk/tests
 ```
 
+PostgreSQL/pgvector tests carry the `postgres` marker and are skipped unless explicitly enabled:
+
+```text
+RUN_POSTGRES_TESTS=1 pytest server/tests packages/python-sdk/tests
+```
+
+Set `RUN_POSTGRES_TESTS=1` only when `WEIRWISE_DATABASE_URL` and
+`WEIRWISE_DATABASE_SYNC_URL` point to a disposable database. Live provider integration tests also
+require `RUN_LIVE_CORE_TESTS=1` and credentials supplied through the environment; they may send
+test input to the configured provider. No test reads a developer-specific secrets file.
+
 CI is the source for external-service setup and supported Python versions. Tests must use a
 disposable database, isolated storage directory, and fake or explicitly configured provider
 credentials. Never run migrations against a shared/production database or use real customer files.
-Report skipped PostgreSQL/provider integration tests clearly; a SQLite-only pass does not prove
+Report skipped PostgreSQL/provider integration tests clearly; a unit-only pass does not prove
 PostgreSQL/pgvector behavior.

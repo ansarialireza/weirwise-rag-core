@@ -49,6 +49,7 @@ def test_adversarial_boundary_text_chunking():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_deterministic_tie_breaking_in_vector_retrieval():
     """Verify that identical distance vectors break ties deterministically by chunk_index and id."""
     tenant_name = f"TieBreak-{uuid.uuid4().hex[:6]}"
@@ -131,6 +132,7 @@ async def test_deterministic_tie_breaking_in_vector_retrieval():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_search_endpoint_with_null_and_boundary_score_thresholds():
     """Verify search endpoint handles score_threshold: 0.0, 1.0, null, and rejects out-of-range floats."""
     transport = ASGITransport(app=app)
@@ -202,6 +204,7 @@ async def test_search_endpoint_with_null_and_boundary_score_thresholds():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_search_endpoint_with_metadata_filters():
     """Verify search endpoint filters results by metadata key-value pairs."""
     transport = ASGITransport(app=app)

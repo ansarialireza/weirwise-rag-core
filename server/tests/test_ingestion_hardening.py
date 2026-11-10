@@ -73,6 +73,7 @@ async def _create_kb(client, headers):
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_upload_rejects_unsafe_payloads():
     headers, _ = await _tenant_headers()
     transport = ASGITransport(app=app)
@@ -111,6 +112,7 @@ async def test_spool_upload_enforces_size_cap_and_cleans_partial(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_inline_ingestion_leaves_no_embedding_staging_files(tmp_path, monkeypatch):
     monkeypatch.setenv("WEIRWISE_STORAGE_DIR", str(tmp_path))
     get_settings.cache_clear()

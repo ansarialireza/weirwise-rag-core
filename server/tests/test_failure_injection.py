@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, patch
 from server.app.main import app
 from server.app.database import AsyncSessionLocal, engine, Base
 from server.app.models import Tenant, APIKey, KnowledgeBase, Document, IngestionJob
+from server.app.config import get_settings
 from server.app.auth import generate_api_key
 from server.app.providers import OpenAIEmbeddingProvider
-from server.app.config import get_settings
 from server.app.worker import process_document_job
 from sqlalchemy import text
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.postgres]
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ async def prepare_db():
     yield
 
 
-async def test_failure_injection_embedding_provider_error():
+async def test_failure_injection_embedding_provider_error(tmp_path):
     """Verify document transitions cleanly to 'failed' with error message when embedding provider fails."""
     tenant_name = f"Fail-Tenant-{uuid.uuid4().hex[:6]}"
     raw_key, key_hash = generate_api_key(prefix="ww_fail_")
@@ -86,8 +86,7 @@ async def test_failure_injection_embedding_provider_error():
     # Create dummy storage file
     import os
 
-    os.makedirs(settings.storage_dir, exist_ok=True)
-    file_path = os.path.join(settings.storage_dir, f"{doc_id}.txt")
+    file_path = os.path.join(tmp_path, f"{doc_id}.txt")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("Some text that requires embedding generation.")
 

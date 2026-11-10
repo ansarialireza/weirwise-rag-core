@@ -56,7 +56,7 @@ docker compose exec server python -m server.app.cli check-db
 
 ### 3. Create Tenant & API Key
 ```bash
-docker compose exec server python -m server.app.cli admin create-tenant --name "My Workspace"
+docker compose exec server python -m server.app.cli admin create-tenant --name "Local Development"
 ```
 Output:
 ```text
@@ -64,7 +64,7 @@ Output:
  Weirwise Tenant & API Key Created Successfully
 ============================================================
  Tenant ID : c40d6c8e-5b12-4c22-92fe-5c5cb29135a1
- Tenant Name: My Workspace
+ Tenant Name: Local Development
  API Key    : ww_kL29c...
 ============================================================
 ```
@@ -152,6 +152,10 @@ ruff format --check .
 # Run test suite
 pytest server/tests packages/python-sdk/tests
 ```
+
+PostgreSQL/pgvector tests are skipped unless `RUN_POSTGRES_TESTS=1` is set with a disposable
+database configured. Live provider integration tests additionally require `RUN_LIVE_CORE_TESTS=1`
+and credentials supplied through the environment.
 
 ---
 

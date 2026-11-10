@@ -114,6 +114,7 @@ async def test_retrieval_score_threshold_filtering():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_native_pgvector_score_threshold_real_db():
     """Verify native PostgreSQL pgvector cosine distance filtering against live PostgreSQL."""
     from server.app.database import AsyncSessionLocal, engine, Base
@@ -239,6 +240,7 @@ async def test_native_pgvector_score_threshold_real_db():
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgres
 async def test_vector_similarity_semantics_parity():
     """Verify exact parity between PostgreSQL/pgvector and SQLite fallback across identical,
 
